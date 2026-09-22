@@ -8,8 +8,17 @@ from app.schemas import TriageResult
 from app.classifier import ClassificationError
 from app.config import ConfigurationError
 from app.database import DatabaseError
+from app.notifications import NotificationError
 
 client = TestClient(app)
+
+
+@pytest.fixture(autouse=True)
+def notifications(monkeypatch):
+    send, update = Mock(), Mock()
+    monkeypatch.setattr("app.main.send_notification", send)
+    monkeypatch.setattr("app.main.update_notification_status", update)
+    return send, update
 
 
 @pytest.fixture(autouse=True)
@@ -127,15 +136,73 @@ def test_save_precedes_response_and_sets_status(valid_request, classifier, persi
     response = client.post("/webhook", json=valid_request)
     assert response.status_code == 200
     assert response.json() == {
-        **classifier.return_value.model_dump(), "id": 71, "notification_status": status,
+        **classifier.return_value.model_dump(), "id": 71,
+        "notification_status": "sent" if priority == "high" else status,
     }
     persistence.assert_called_once()
 
 
 @pytest.mark.parametrize("error", [DatabaseError("private connection info"), ConfigurationError("private URL")])
-def test_save_failure_returns_503(valid_request, persistence, error):
+def test_save_failure_returns_503(valid_request, persistence, error, classifier, notifications):
+    classifier.return_value.priority = "high"
     persistence.side_effect = error
     response = client.post("/webhook", json=valid_request)
     assert response.status_code == 503
     assert "private" not in response.text
     assert "id" not in response.json()
+    notifications[0].assert_not_called()
+    notifications[1].assert_not_called()
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_high_priority_notification_order(valid_request, classifier, persistence, notifications, failure):
+    classifier.return_value.priority = "high"
+    events = []
+    persistence.side_effect = lambda *args: events.append("committed") or 42
+
+    def send(*args):
+        assert events == ["committed"]
+        events.append("slack")
+        if failure:
+            raise NotificationError("Slack network error; delivery is uncertain.")
+
+    def update(*args):
+        assert events == ["committed", "slack"]
+        events.append("updated")
+
+    notifications[0].side_effect = send
+    notifications[1].side_effect = update
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == 200
+    status = "failed" if failure else "sent"
+    assert response.json()["notification_status"] == status
+    notifications[1].assert_called_once_with(
+        42, status, "Slack network error; delivery is uncertain." if failure else None
+    )
+    assert events == ["committed", "slack", "updated"]
+    persistence.assert_called_once()
+
+
+@pytest.mark.parametrize("priority", ["low", "medium"])
+def test_nonurgent_skips_slack(valid_request, classifier, notifications, priority):
+    classifier.return_value.priority = priority
+    response = client.post("/webhook", json=valid_request)
+    assert response.json()["notification_status"] == "not_required"
+    notifications[0].assert_not_called()
+    notifications[1].assert_not_called()
+
+
+@pytest.mark.parametrize("slack_fails", [False, True])
+@pytest.mark.parametrize("error", [DatabaseError("secret"), ConfigurationError("secret")])
+def test_update_failure_has_separate_error_body(valid_request, classifier, notifications, error, slack_fails):
+    classifier.return_value.priority = "high"
+    if slack_fails:
+        notifications[0].side_effect = NotificationError("Slack failed.")
+    notifications[1].side_effect = error
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == 503
+    assert response.json() == {"detail": {
+        "code": "notification_status_update_failed",
+        "message": "The request was saved, but the notification outcome could not be recorded.",
+        "request_id": 42,
+    }}

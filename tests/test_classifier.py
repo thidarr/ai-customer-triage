@@ -17,6 +17,7 @@ def settings(monkeypatch):
     monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.setenv("GEMINI_MODEL", "test-model")
+    monkeypatch.setattr("app.classifier.time.sleep", MagicMock())
 
 
 @pytest.fixture
@@ -154,3 +155,54 @@ def test_real_sdk_serializes_schema_with_mocked_transport(monkeypatch, output):
     assert schema["additionalProperties"] is False
     assert "additional_properties" not in schema
     assert set(schema["required"]) == set(output)
+
+
+@pytest.mark.parametrize("code", [429, 500, 502, 503, 504])
+def test_temporary_failure_recovers_on_third_attempt(gemini, output, monkeypatch, code):
+    sleep = MagicMock()
+    monkeypatch.setattr("app.classifier.time.sleep", sleep)
+    monkeypatch.setattr("app.classifier.random.uniform", lambda a, b: 0.5)
+    failure = errors.APIError(code, {"error": {"message": "temporary"}})
+    gemini[1].side_effect = [failure, failure, MagicMock(text=json.dumps(output))]
+    assert classify_message("Invoice please.").model_dump() == output
+    assert gemini[1].call_count == 3
+    assert [call.args[0] for call in sleep.call_args_list] == [1.5, 2.5]
+    assert gemini[0].call_args.kwargs["http_options"].retry_options.attempts == 1
+
+
+def test_retries_exhausted_and_logs_are_safe(gemini, caplog):
+    failure = errors.APIError(503, {"error": {"message": "test-key private-message secret-url"}})
+    gemini[1].side_effect = failure
+    with pytest.raises(ClassificationError) as caught:
+        classify_message("private-message")
+    assert caught.value.__cause__ is failure
+    assert gemini[1].call_count == 3
+    assert "http_code=503" in caplog.text
+    for secret in ("test-key", "private-message", "secret-url"):
+        assert secret not in caplog.text
+
+
+@pytest.mark.parametrize("code", [400, 401, 403, 404, 422])
+def test_permanent_provider_error_is_not_retried(gemini, code):
+    gemini[1].side_effect = errors.APIError(code, {"error": {"message": "invalid"}})
+    with pytest.raises(ClassificationError):
+        classify_message("Help")
+    gemini[1].assert_called_once()
+
+
+@pytest.mark.parametrize("text", [None, "", "not JSON", '{"summary":"private-message"}'])
+def test_invalid_output_is_not_retried_or_logged(gemini, caplog, text):
+    gemini[1].return_value = MagicMock(text=text)
+    with pytest.raises(ClassificationError):
+        classify_message("private-message")
+    gemini[1].assert_called_once()
+    assert "private-message" not in caplog.text
+
+
+@pytest.mark.parametrize("error", [httpx.ReadTimeout("secret"), httpx.ConnectError("secret")])
+def test_transport_failure_is_not_retried(gemini, caplog, error):
+    gemini[1].side_effect = error
+    with pytest.raises(ClassificationError):
+        classify_message("Help")
+    gemini[1].assert_called_once()
+    assert "secret" not in caplog.text

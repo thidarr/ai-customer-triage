@@ -1,8 +1,8 @@
 # Customer Request Triage
 
-Phase three validates customer requests, sends only their message to Gemini,
+Phase four validates customer requests, sends only their message to Gemini,
 and saves the validated request and classification to PostgreSQL before returning
-success. Slack is not implemented.
+success. High-priority requests trigger Slack notifications after the save commits.
 
 ## Setup and run (Git Bash)
 
@@ -91,10 +91,36 @@ Only the four required fields are allowed. Categories are `billing`, `account`,
 and suggested action must be nonempty strings after trimming whitespace.
 
 API/network failures and invalid or absent model output return HTTP 502 with a
-safe error message. Missing configuration returns HTTP 503. There is a 30-second
-SDK HTTP timeout and one SDK attempt, with no application retry loop. Failed
+safe error message. Missing configuration returns HTTP 503. Failed
 classification never returns a successful result. Validation checks structure,
 not the factual accuracy of the model's judgment.
+
+## Gemini retries versus Slack attempts
+
+| Behavior | Gemini classification | Slack notification |
+| --- | --- | --- |
+| Maximum attempts | 3 total: initial call plus up to 2 retries | 1; no automatic retries |
+| Retry conditions | Provider HTTP 429, 500, 502, 503, or 504 | None |
+| Delay before retry | 1–2 seconds, then 2–3 seconds, including random jitter | None |
+| HTTP timeout | 30 seconds per attempt | 10 seconds |
+| When it runs | Before database storage | After the save commits, for high priority only |
+| Final failure | HTTP 502; no database save or Slack call | Record `failed` and a safe error; HTTP 200 if that update commits |
+
+The retry loop is inside `app/classifier.py`. Gemini SDK retries are disabled
+(`attempts=1`) so they cannot multiply the application's three total attempts.
+Other provider status codes, network exceptions (including timeouts), empty
+output, and JSON/Pydantic validation failures are not retried. Classification
+still requires explicit output validation before any database save.
+
+Gemini retries do not repeat database inserts or Slack notifications. They can
+increase response time and cannot guarantee recovery during sustained overload.
+Application diagnostic logs include retry attempt numbers, delays, HTTP codes,
+and exception types or failure categories, without customer messages, secrets,
+raw provider responses, or exception tracebacks.
+
+Slack remains a single attempt. If recording its outcome in PostgreSQL fails,
+the endpoint returns the separate HTTP 503 error with the saved `request_id`
+shown below; the original customer request remains saved.
 
 ## Persistence
 
@@ -108,13 +134,13 @@ after existing validation/normalization, not as the untouched raw HTTP body.
 `id` identifies a request; `customer_id` identifies a customer and is not unique.
 The response includes the saved ID and status only after the transaction commits.
 Connection, insert, or commit failures return HTTP 503 without a success result.
-In the future, Slack must run only after this commit. High-priority records remain
-`pending` in this phase; no notification is attempted.
+Slack runs only after this commit. High-priority records start as `pending`, then
+are updated to `sent` or `failed` in a separate transaction.
 
 The initialization command creates the table if absent; it does not migrate
 existing tables. Inserts use SQL parameters and a connection context that commits
 on success, rolls back on failure, and closes the connection. Each submission
-creates a separate row; duplicate prevention and automatic retries are not added.
+creates a separate row; duplicate prevention and automatic database retries are not added.
 If a connection is lost during commit, its outcome can be uncertain; an error
 response is not proof that no row exists.
 
@@ -143,6 +169,12 @@ notification status, and connection/insert/commit failures. Gemini and database
 connections are mocked: no real credentials or services are needed. These tests
 do not verify actual PostgreSQL DDL execution; use the local check above as well.
 
+The latest automated run after adding Gemini retries passed all 112 tests, with
+two existing dependency deprecation warnings. Retry tests cover recovery,
+three-attempt exhaustion, non-retryable failures, and safe diagnostic logging.
+External service interactions are mocked; this result does not establish live
+Gemini, PostgreSQL, or Slack availability.
+
 ## Files
 
 - `app/__init__.py`: marks the application directory as a Python package.
@@ -160,5 +192,53 @@ do not verify actual PostgreSQL DDL execution; use the local check above as well
 
 ## Later phases
 
-Slack notifications and updates to `sent`/`failed` status are future work.
-The table already allows those statuses and includes nullable `notification_error`.
+Automatic Slack retries and recovery of pending/failed notifications are future work.
+
+## Slack setup and behavior
+
+Create a Slack app for your workspace, enable Incoming Webhooks, and add a webhook
+for your chosen channel. Put its secret URL in the local `.env`:
+
+```dotenv
+SLACK_WEBHOOK_URL=https://hooks.slack.com/services/your/webhook/path
+```
+
+Save `.env` and restart FastAPI. No new dependencies or database migrations are
+needed. The URL stays on the backend; do not commit or share it.
+
+`app/notifications.py` posts the saved request ID and classification using plain-text
+Slack blocks. Summary and action are each limited to 1,000 characters in Slack;
+the complete values remain in PostgreSQL. The call uses a 10-second HTTP timeout
+and no automatic retries. HTTP 200 with body `ok` counts as success.
+
+- High priority: save `pending`, send Slack, then record `sent` with a null error,
+  or `failed` with a safe error reason. Either outcome returns HTTP 200 after
+  the outcome update commits.
+- Medium/low: keep `not_required`; do not read Slack configuration or call Slack.
+- Missing/invalid Slack configuration counts as notification failure for high priority.
+- Initial save failure prevents Slack and returns HTTP 503.
+- Outcome-update failure returns HTTP 503 with the separate error body below.
+  The original request remains saved. Status may remain `pending`; a lost commit
+  acknowledgement may also mean the update completed without confirmation.
+
+```json
+{
+  "detail": {
+    "code": "notification_status_update_failed",
+    "message": "The request was saved, but the notification outcome could not be recorded.",
+    "request_id": 42
+  }
+}
+```
+
+This error is not a `WebhookResponse`. Inspect the saved record by `request_id`
+rather than resubmitting the entire request, which could create duplicate rows
+and notifications. Timeouts/network errors indicate uncertain delivery, even
+when recorded as `failed`. A process interruption can also leave `pending`.
+
+For a real check, submit an urgent request through `/docs`, confirm the returned
+priority is high, check the Slack channel, and inspect that row in Supabase.
+Expect `sent` and a null error after successful delivery. Submit a routine request
+and confirm a low/medium classification stays `not_required` without a Slack post.
+Automated tests mock Slack HTTP calls and database connections; they cover rejection,
+timeouts, safe errors, ordering, and status-update failures without sending messages.

@@ -70,6 +70,30 @@ def save_request(
         raise DatabaseError("Could not save the request.") from exc
 
 
+def update_notification_status(
+    request_id: int, status: NotificationStatus, error: str | None
+) -> None:
+    """Commit the notification outcome separately from the original insert."""
+    if status not in ("sent", "failed"):
+        raise ValueError("Notification outcome must be sent or failed.")
+    if status == "sent":
+        error = None
+    elif not error or not error.strip():
+        raise ValueError("Failed notifications require an error reason.")
+    database_url = get_database_url()
+    try:
+        with psycopg.connect(database_url, connect_timeout=10) as connection:
+            cursor = connection.execute(
+                "UPDATE customer_requests SET notification_status = %s, notification_error = %s "
+                "WHERE id = %s AND notification_status = 'pending'",
+                (status, error, request_id),
+            )
+            if cursor.rowcount != 1:
+                raise DatabaseError("Pending request was not found for notification update.")
+    except psycopg.Error as exc:
+        raise DatabaseError("Could not record notification outcome.") from exc
+
+
 if __name__ == "__main__":
     try:
         initialize_database()

@@ -1,4 +1,5 @@
 import os
+from urllib.parse import urlsplit
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,3 +33,19 @@ def get_database_url() -> str:
     if not database_url:
         raise ConfigurationError("DATABASE_URL must be set.")
     return database_url
+
+
+def get_slack_webhook_url() -> str:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    url = os.getenv("SLACK_WEBHOOK_URL", "").strip()
+    try:
+        parts = urlsplit(url)
+        valid = (parts.scheme == "https" and parts.hostname == "hooks.slack.com"
+                 and parts.path.startswith("/services/") and not parts.username
+                 and not parts.password and parts.port in (None, 443)
+                 and not parts.query and not parts.fragment)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ConfigurationError("Slack webhook is missing or invalid.")
+    return url

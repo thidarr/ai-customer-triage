@@ -101,8 +101,39 @@ def test_database_config_does_not_require_gemini(monkeypatch):
 
 
 def test_commit_failure_reaches_webhook_as_503(connection, monkeypatch, request_data, result):
+    send = MagicMock()
+    monkeypatch.setattr("app.main.send_notification", send)
     monkeypatch.setattr("app.main.classify_message", lambda message: result)
     connection[1].__exit__.side_effect = psycopg.OperationalError("private commit details")
     response = TestClient(app).post("/webhook", json=request_data.model_dump())
     assert response.status_code == 503
     assert response.json() == {"detail": "Unable to save the request."}
+    send.assert_not_called()
+
+
+@pytest.mark.parametrize("status,error", [("sent", None), ("failed", "Slack failed.")])
+def test_notification_update(connection, status, error):
+    conn = connection[1]
+    conn.execute.return_value.rowcount = 1
+    database.update_notification_status(42, status, error)
+    sql, params = conn.execute.call_args.args
+    assert params == (status, error, 42)
+    assert "notification_status = 'pending'" in sql
+    conn.__exit__.assert_called_once_with(None, None, None)
+
+
+def test_missing_pending_record_is_error(connection):
+    connection[1].execute.return_value.rowcount = 0
+    with pytest.raises(database.DatabaseError):
+        database.update_notification_status(42, "sent", None)
+
+
+@pytest.mark.parametrize("stage", ["connect", "update", "commit"])
+def test_notification_update_failure(connection, stage):
+    connect, conn = connection
+    conn.execute.return_value.rowcount = 1
+    failure = psycopg.OperationalError("secret")
+    {"connect": connect, "update": conn.execute, "commit": conn.__exit__}[stage].side_effect = failure
+    with pytest.raises(database.DatabaseError) as caught:
+        database.update_notification_status(42, "failed", "Slack failed.")
+    assert caught.value.__cause__ is failure

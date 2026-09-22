@@ -1,3 +1,7 @@
+import logging
+import random
+import time
+
 import httpx
 from google import genai
 from google.genai import errors, types
@@ -5,6 +9,9 @@ from pydantic import ValidationError
 
 from app.config import get_settings
 from app.schemas import TriageResult
+
+logger = logging.getLogger(__name__)
+RETRYABLE_STATUS_CODES = {429, 500, 502, 503, 504}
 
 CLASSIFICATION_POLICY = """
 Classify the customer message using the following policy.
@@ -44,22 +51,41 @@ def classify_message(message: str) -> TriageResult:
             api_key=settings.gemini_api_key,
             http_options=types.HttpOptions(
                 timeout=30_000,
+                # The loop below owns retries; disable SDK retries to avoid multiplying attempts.
                 retry_options=types.HttpRetryOptions(attempts=1),
             ),
         ) as client:
-            response = client.models.generate_content(
-                model=settings.gemini_model,
-                contents=message,
-                config=types.GenerateContentConfig(
-                    system_instruction=CLASSIFICATION_POLICY,
-                    response_mime_type="application/json",
-                    response_json_schema=TriageResult.model_json_schema(),
-                ),
-            )
+            for attempt in range(1, 4):
+                try:
+                    response = client.models.generate_content(
+                        model=settings.gemini_model,
+                        contents=message,
+                        config=types.GenerateContentConfig(
+                            system_instruction=CLASSIFICATION_POLICY,
+                            response_mime_type="application/json",
+                            response_json_schema=TriageResult.model_json_schema(),
+                        ),
+                    )
+                    break
+                except errors.APIError as exc:
+                    if exc.code not in RETRYABLE_STATUS_CODES or attempt == 3:
+                        raise
+                    delay = 2 ** (attempt - 1) + random.uniform(0, 1)
+                    logger.warning(
+                        "Gemini retry: attempt=%s/3 http_code=%s delay_seconds=%.2f",
+                        attempt, exc.code, delay,
+                    )
+                    time.sleep(delay)
             if not response.text:
+                logger.warning("Gemini classification failed: empty output")
                 raise ClassificationError("Gemini returned no classification.")
             return TriageResult.model_validate_json(response.text)
     except (errors.APIError, httpx.HTTPError) as exc:
+        # Never log exception text, request URLs, response bodies, or tracebacks.
+        code = exc.code if isinstance(exc, errors.APIError) and isinstance(exc.code, int) else None
+        logger.warning("Gemini classification failed: exception_type=%s http_code=%s",
+                       type(exc).__name__, code)
         raise ClassificationError("Gemini request failed.") from exc
     except ValidationError as exc:
+        logger.warning("Gemini classification failed: output validation error")
         raise ClassificationError("Gemini returned an invalid classification.") from exc
