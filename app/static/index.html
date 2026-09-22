@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Customer Triage · Live Demo</title>
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header><span class="eyebrow">AI CUSTOMER TRIAGE</span>
+      <h1>From request to clear next steps.</h1>
+      <p>Try a customer support scenario. Gemini classifies the request, and the backend saves the validated result to PostgreSQL.</p>
+    </header>
+    <div class="workflow" aria-label="Workflow">Preset request <span>→</span> Gemini <span>→</span> Validation <span>→</span> PostgreSQL</div>
+    <section class="panel" aria-labelledby="scenario-heading">
+      <h2 id="scenario-heading">Choose a scenario</h2>
+      <form id="demo-form">
+        <label for="scenario">Customer request</label>
+        <select id="scenario" disabled></select>
+        <p id="preview" class="preview"></p>
+        <button id="submit" disabled>Classify &amp; save</button>
+      </form>
+      <p class="note">Live Gemini classification and database storage. Slack notifications are disabled for this public demo.</p>
+      <p id="status" role="status" aria-live="polite">Loading scenarios…</p>
+    </section>
+    <section id="result" class="panel" aria-labelledby="result-heading" hidden>
+      <h2 id="result-heading">Saved classification</h2>
+      <dl>
+        <dt>Request ID</dt><dd id="request-id"></dd>
+        <dt>Category</dt><dd id="category"></dd>
+        <dt>Priority</dt><dd id="priority"></dd>
+        <dt>Summary</dt><dd id="summary"></dd>
+        <dt>Suggested action</dt><dd id="action"></dd>
+        <dt>Notification</dt><dd id="notification"></dd>
+      </dl>
+    </section>
+    <footer>Three fictional scenarios. A shared usage allowance keeps this live demo small. AI classifications may vary.</footer>
+  </main>
+</body>
+</html>

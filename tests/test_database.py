@@ -103,8 +103,8 @@ def test_database_config_does_not_require_gemini(monkeypatch):
 
 def test_commit_failure_reaches_webhook_as_503(connection, monkeypatch, request_data, result):
     send = MagicMock()
-    monkeypatch.setattr("app.main.send_notification", send)
-    monkeypatch.setattr("app.main.classify_message", lambda message: result)
+    monkeypatch.setattr("app.pipeline.send_notification", send)
+    monkeypatch.setattr("app.pipeline.classify_message", lambda message: result)
     connection[1].__exit__.side_effect = psycopg.OperationalError("private commit details")
     response = TestClient(app).post("/webhook", json=request_data.model_dump(),
                                     headers={"X-API-Key": "test-webhook-key"})

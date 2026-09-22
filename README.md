@@ -2,7 +2,8 @@
 
 Phase four validates customer requests, sends only their message to Gemini,
 and saves the validated request and classification to PostgreSQL before returning
-success. High-priority requests trigger Slack notifications after the save commits.
+success. High-priority authenticated webhook requests trigger Slack notifications
+after the save commits. The public preset demo uses the same pipeline with Slack disabled.
 
 ## Setup and run (Git Bash)
 
@@ -62,7 +63,7 @@ The key is compared using `secrets.compare_digest` on bytes. No key is included
 in application logs or responses. To rotate it, replace the environment value,
 restart the application, and update trusted callers. There is one shared key and
 no per-user identity, expiry, or replay protection. Do not embed this key in a
-public frontend; a future public UI needs a separate access design. Use HTTPS
+public frontend; the preset demo below never uses this key. Use HTTPS
 for deployed webhook requests. `/docs` remains public but requires the key to
 execute the webhook.
 
@@ -93,6 +94,77 @@ still consume resources. Duplicate submissions remain possible. Gemini validatio
 does not guarantee classification accuracy or eliminate prompt injection, and
 personal information inside message text can reach Gemini and the Slack summary.
 No OAuth, users, queues, workers, or additional retries were introduced.
+
+## Public portfolio demo
+
+Open `/` for the small HTML/CSS/JavaScript UI. Recruiters do not enter an API key.
+The browser fetches `GET /demo/samples` and submits only a preset ID to `POST /demo`:
+
+```json
+{"sample_id": "urgent_checkout"}
+```
+
+Exactly three server-owned scenarios are available: `routine_invoice`,
+`account_access`, and `urgent_checkout`. Arbitrary messages, customer fields,
+unknown IDs, and extra fields are rejected with 422. The server supplies fictional
+customer details and `demo_<sample_id>` customer IDs. Reads do not consume budget.
+Gemini and PostgreSQL calls are real; model results can vary.
+
+Enable explicitly in `.env` or deployment settings (disabled by default):
+
+```dotenv
+PUBLIC_DEMO_ENABLED=true
+PUBLIC_DEMO_MAX_REQUESTS=20
+```
+
+Save settings and restart the process. The application never modifies your `.env`.
+Use one worker and one instance for deployment, without development reload:
+
+```bash
+./.venv/Scripts/python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+```
+
+Serve it through your host's HTTPS endpoint. `--reload` is for local development
+only: reloads reset the allowance. This demo requires Gemini and database settings,
+but neither a webhook API key nor Slack settings. `/webhook` still requires its key.
+
+Flow: enabled/configuration check → preset validation → atomic admission → shared
+pipeline classification/validation → database commit → response. A process-wide lock
+guards a cumulative submission counter and one active-request flag; it is never held
+during external calls. Busy or exhausted requests are rejected rather than queued.
+The running slot is released in `finally`, including on classification/save failures.
+
+| Condition | Demo response | Budget consumed? |
+| --- | --- | --- |
+| Disabled or invalid configuration | 503, `demo_disabled` | No |
+| Invalid preset/body | 422 | No |
+| Another demo is running | 429, `demo_busy` (unless already exhausted) | No |
+| Allowance exhausted | 429, `demo_budget_exhausted` | No |
+| Admitted submission, including a failed one | Pipeline's existing response | One |
+
+The default is 20 admitted submissions per process lifetime. Each may cause up to
+three Gemini attempts, so at most 60 attempts for that allowance. Restarting resets
+the counter; multiple processes each have their own counter. This is not a durable
+spending cap or per-user fairness mechanism: one visitor can exhaust it. Set
+`PUBLIC_DEMO_ENABLED=false` and restart to disable both demo API routes. The static
+page remains visible and explains that the demo is disabled.
+
+`app/pipeline.py` contains the extracted orchestration. `/webhook` calls it with
+`send_slack=True`; `/demo` uses `send_slack=False`. No HTTP self-call or shared secret
+is used between routes. Demo rows always store `not_required` with a null error,
+even at high priority: notification is not required under the public-demo policy.
+Slack configuration is never loaded and no Slack call or status update is made.
+The initial committed record ID and classification are returned as usual.
+
+The UI renders results using `textContent`, has no authentication UI or browser
+credential storage, and disables submission while processing. It never automatically
+resubmits. A network interruption may leave an already-saved row; repeated manual
+submissions can create duplicates. There is no history page or arbitrary input.
+
+For manual verification: enable the demo, restart, visit `/`, select each preset,
+and check the returned ID in Supabase. Confirm high-priority demo rows remain
+`not_required` and Slack receives no message. Then verify an authenticated high-priority
+`/webhook` still sends Slack. These live checks consume real service usage.
 
 ## Webhook
 
@@ -222,7 +294,7 @@ notification status, and connection/insert/commit failures. Gemini and database
 connections are mocked: no real credentials or services are needed. These tests
 do not verify actual PostgreSQL DDL execution; use the local check above as well.
 
-The latest automated run after adding V1 security passed all 136 tests, with
+The latest automated run after adding the preset demo passed all 156 tests, with
 two existing dependency deprecation warnings. Security tests cover authentication,
 fail-closed configuration, field boundaries, and HTTP-client log suppression.
 Retry tests cover recovery,
@@ -234,6 +306,9 @@ Gemini, PostgreSQL, or Slack availability.
 
 - `app/__init__.py`: marks the application directory as a Python package.
 - `app/main.py`: creates FastAPI and defines the webhook endpoint.
+- `app/pipeline.py`: shared orchestration with explicit Slack policy; preserves webhook errors/logs.
+- `app/demo.py`: server-owned presets, demo routes, and atomic process-local admission guard.
+- `app/static/`: same-origin HTML, CSS, and JavaScript demo UI, without credentials.
 - `app/schemas.py`: defines input and classification validation rules.
 - `app/classifier.py`: calls Gemini and returns a validated classification.
 - `app/config.py`: reads Gemini and database configuration independently.
@@ -241,6 +316,8 @@ Gemini, PostgreSQL, or Slack availability.
 - `tests/test_webhook.py`: checks the endpoint and input validation.
 - `tests/test_classifier.py`: checks classification using mocked Gemini calls.
 - `tests/test_database.py`: checks persistence and database failures with mocks.
+- `tests/test_demo.py`: checks presets, budget, concurrent admission, failure release, UI serving,
+  no secret exposure, no demo Slack calls, and independent authenticated webhook behavior.
 - `.env.example`: lists configuration placeholders.
 - `requirements.txt`: lists application and test dependencies.
 - `.gitignore`: excludes local secrets, environments, and generated caches.

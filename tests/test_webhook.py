@@ -22,15 +22,15 @@ def authentication(monkeypatch):
 @pytest.fixture(autouse=True)
 def notifications(monkeypatch):
     send, update = Mock(), Mock()
-    monkeypatch.setattr("app.main.send_notification", send)
-    monkeypatch.setattr("app.main.update_notification_status", update)
+    monkeypatch.setattr("app.pipeline.send_notification", send)
+    monkeypatch.setattr("app.pipeline.update_notification_status", update)
     return send, update
 
 
 @pytest.fixture(autouse=True)
 def persistence(monkeypatch):
     mock = Mock(return_value=42)
-    monkeypatch.setattr("app.main.save_request", mock)
+    monkeypatch.setattr("app.pipeline.save_request", mock)
     return mock
 
 
@@ -40,7 +40,7 @@ def classifier(monkeypatch):
         category="account", priority="medium", summary="Cannot access account.",
         suggested_action="Help the customer recover access.",
     ))
-    monkeypatch.setattr("app.main.classify_message", mock)
+    monkeypatch.setattr("app.pipeline.classify_message", mock)
     return mock
 
 

@@ -26,6 +26,22 @@ def get_settings() -> Settings:
     return Settings(gemini_api_key=api_key, gemini_model=model)
 
 
+def get_demo_settings() -> tuple[bool, int]:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    enabled = os.getenv("PUBLIC_DEMO_ENABLED", "false").strip().lower()
+    if enabled not in ("true", "false"):
+        raise ConfigurationError("Invalid public demo settings.")
+    if enabled == "false":
+        return False, 20
+    try:
+        budget = int(os.getenv("PUBLIC_DEMO_MAX_REQUESTS", "20"))
+    except ValueError as exc:
+        raise ConfigurationError("Invalid public demo settings.") from exc
+    if budget < 1:
+        raise ConfigurationError("Invalid public demo settings.")
+    return True, budget
+
+
 def get_webhook_api_key() -> str:
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
     key = os.getenv("WEBHOOK_API_KEY", "").strip()
