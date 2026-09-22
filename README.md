@@ -41,6 +41,59 @@ API key or database credentials. Initialize the table once, then start the serve
 
 Open http://127.0.0.1:8000/docs to try the webhook interactively.
 
+## Webhook API key and V1 security
+
+Set `WEBHOOK_API_KEY` in your local `.env` or deployment environment. Generate a
+random key in Git Bash, copy its output into that setting, and keep it secret:
+
+```bash
+./.venv/Scripts/python.exe -c "import secrets; print(secrets.token_urlsafe(32))"
+```
+
+Save `.env` and restart FastAPI. In `/docs`, click **Authorize** and enter the
+key itself (no `Bearer` prefix). Trusted callers must send the `X-API-Key` header.
+Query parameters and JSON body fields cannot authenticate a request. Missing,
+empty, or incorrect keys return HTTP 401 with the same generic error. Missing or
+blank server configuration returns HTTP 503; the endpoint never runs without
+authentication. Failed authentication prevents Gemini, database, and Slack calls.
+Malformed JSON may be rejected before the authentication dependency runs.
+
+The key is compared using `secrets.compare_digest` on bytes. No key is included
+in application logs or responses. To rotate it, replace the environment value,
+restart the application, and update trusted callers. There is one shared key and
+no per-user identity, expiry, or replay protection. Do not embed this key in a
+public frontend; a future public UI needs a separate access design. Use HTTPS
+for deployed webhook requests. `/docs` remains public but requires the key to
+execute the webhook.
+
+Input limits after whitespace trimming are 100 characters for `customer_id`,
+200 for `customer_name`, and 10,000 for `message`. Oversized fields return 422
+before external calls. These are not HTTP request-body limits: JSON is parsed
+before Pydantic validation, including ignored extra fields.
+
+Application initialization sets HTTPX and HTTPCore logging to WARNING to suppress
+verbose request logs that could expose the secret Slack URL. Keep these levels
+in deployment; do not enable HTTP-client debug logging or header/body capture.
+Existing safe application diagnostics and pipeline behavior are unchanged.
+
+Deployment checks (not new infrastructure in this project):
+
+- Configure a request-body size limit at the hosting platform/proxy when available.
+- Keep Supabase's Data API disabled for backend-only access, or secure exposed
+  tables with appropriate grants/RLS. FastAPI authentication does not protect
+  an independently exposed Supabase API; table initialization does not enable RLS.
+- Require encrypted PostgreSQL connections and use a least-privilege runtime
+  role for inserts, notification updates, and required sequence/RETURNING access.
+  Use a separate owner/setup account for table initialization.
+- Keep credentials out of source control and configure proxy/platform logs to
+  exclude authentication headers and customer content.
+
+V1 intentionally has no rate-limiting infrastructure: an authorized caller can
+still consume resources. Duplicate submissions remain possible. Gemini validation
+does not guarantee classification accuracy or eliminate prompt injection, and
+personal information inside message text can reach Gemini and the Slack summary.
+No OAuth, users, queues, workers, or additional retries were introduced.
+
 ## Webhook
 
 Send `POST /webhook` with a JSON body:
@@ -169,8 +222,10 @@ notification status, and connection/insert/commit failures. Gemini and database
 connections are mocked: no real credentials or services are needed. These tests
 do not verify actual PostgreSQL DDL execution; use the local check above as well.
 
-The latest automated run after adding Gemini retries passed all 112 tests, with
-two existing dependency deprecation warnings. Retry tests cover recovery,
+The latest automated run after adding V1 security passed all 136 tests, with
+two existing dependency deprecation warnings. Security tests cover authentication,
+fail-closed configuration, field boundaries, and HTTP-client log suppression.
+Retry tests cover recovery,
 three-attempt exhaustion, non-retryable failures, and safe diagnostic logging.
 External service interactions are mocked; this result does not establish live
 Gemini, PostgreSQL, or Slack availability.

@@ -10,7 +10,13 @@ from app.config import ConfigurationError
 from app.database import DatabaseError
 from app.notifications import NotificationError
 
-client = TestClient(app)
+client = TestClient(app, headers={"X-API-Key": "test-webhook-key"})
+
+
+@pytest.fixture(autouse=True)
+def authentication(monkeypatch):
+    monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setenv("WEBHOOK_API_KEY", "test-webhook-key")
 
 
 @pytest.fixture(autouse=True)
@@ -265,3 +271,64 @@ def test_success_does_not_log_failures(valid_request, classifier, caplog, priori
     response = client.post("/webhook", json=valid_request)
     assert response.status_code == 200
     assert not [r for r in caplog.records if r.name == "app.main"]
+
+
+@pytest.mark.parametrize("key", [None, "", "wrong-secret", "Bearer test-webhook-key", " test-webhook-key "])
+def test_invalid_authentication_stops_pipeline(valid_request, classifier, persistence, notifications, caplog, key):
+    headers = {} if key is None else {"X-API-Key": key}
+    response = TestClient(app).post("/webhook", json=valid_request, headers=headers)
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Invalid or missing API key."}
+    classifier.assert_not_called()
+    persistence.assert_not_called()
+    notifications[0].assert_not_called()
+    notifications[1].assert_not_called()
+    assert "test-webhook-key" not in response.text + caplog.text
+    assert "wrong-secret" not in response.text + caplog.text
+
+
+@pytest.mark.parametrize("key", [None, "", "   "])
+def test_missing_server_key_fails_closed(valid_request, classifier, persistence, notifications, monkeypatch, key):
+    if key is None:
+        monkeypatch.delenv("WEBHOOK_API_KEY")
+    else:
+        monkeypatch.setenv("WEBHOOK_API_KEY", key)
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == 503
+    assert response.json() == {"detail": "Webhook authentication is not configured."}
+    classifier.assert_not_called()
+    persistence.assert_not_called()
+    notifications[0].assert_not_called()
+
+
+def test_query_and_body_cannot_authenticate(valid_request, classifier):
+    valid_request["X-API-Key"] = "test-webhook-key"
+    response = TestClient(app).post("/webhook?X-API-Key=test-webhook-key", json=valid_request)
+    assert response.status_code == 401
+    classifier.assert_not_called()
+
+
+@pytest.mark.parametrize("field,limit", [("customer_id", 100), ("customer_name", 200), ("message", 10_000)])
+@pytest.mark.parametrize("extra", [0, 1])
+def test_input_length_boundaries(valid_request, classifier, persistence, notifications, field, limit, extra):
+    valid_request[field] = "x" * (limit + extra)
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == (422 if extra else 200)
+    if extra:
+        classifier.assert_not_called()
+        persistence.assert_not_called()
+        notifications[0].assert_not_called()
+
+
+def test_correct_key_is_not_logged(valid_request, caplog):
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == 200
+    assert "test-webhook-key" not in response.text + caplog.text
+
+
+def test_openapi_describes_api_key():
+    schema = app.openapi()
+    assert schema["components"]["securitySchemes"]["APIKeyHeader"] == {
+        "type": "apiKey", "in": "header", "name": "X-API-Key",
+    }
+    assert schema["paths"]["/webhook"]["post"]["security"] == [{"APIKeyHeader": []}]

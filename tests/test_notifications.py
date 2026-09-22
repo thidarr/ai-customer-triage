@@ -1,4 +1,5 @@
 from unittest.mock import Mock
+import logging
 
 import httpx
 import pytest
@@ -58,3 +59,31 @@ def test_invalid_configuration_skips_http(slack, result, monkeypatch, url):
     with pytest.raises(NotificationError):
         send_notification(42, result)
     slack.assert_not_called()
+
+
+def test_http_client_does_not_log_webhook_url(monkeypatch, caplog, result):
+    # Exercise the actual HTTPX request path; only the network transport is mocked.
+    from app.main import app
+    assert app is not None
+    assert logging.getLogger("httpx").level == logging.WARNING
+    assert logging.getLogger("httpcore").level == logging.WARNING
+    monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
+    url = "https://hooks.slack.com/services/private/secret/token"
+    monkeypatch.setenv("SLACK_WEBHOOK_URL", url)
+    original_client = httpx.Client
+    requests = []
+
+    def respond(request):
+        requests.append(request)
+        return httpx.Response(200, text="ok")
+
+    def make_client(**kwargs):
+        return original_client(**kwargs, transport=httpx.MockTransport(respond))
+
+    monkeypatch.setattr("httpx._api.Client", make_client)
+    with caplog.at_level(logging.INFO):
+        send_notification(42, result)
+    assert len(requests) == 1
+    assert url not in caplog.text
+    assert "secret" not in caplog.text
+    assert not [r for r in caplog.records if r.name in ("httpx", "httpcore")]

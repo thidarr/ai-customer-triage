@@ -14,6 +14,7 @@ from app.schemas import CustomerRequest, TriageResult
 def configuration(monkeypatch):
     monkeypatch.setattr("app.config.load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setenv("DATABASE_URL", "postgresql://test:test@localhost/test")
+    monkeypatch.setenv("WEBHOOK_API_KEY", "test-webhook-key")
 
 
 @pytest.fixture
@@ -105,7 +106,8 @@ def test_commit_failure_reaches_webhook_as_503(connection, monkeypatch, request_
     monkeypatch.setattr("app.main.send_notification", send)
     monkeypatch.setattr("app.main.classify_message", lambda message: result)
     connection[1].__exit__.side_effect = psycopg.OperationalError("private commit details")
-    response = TestClient(app).post("/webhook", json=request_data.model_dump())
+    response = TestClient(app).post("/webhook", json=request_data.model_dump(),
+                                    headers={"X-API-Key": "test-webhook-key"})
     assert response.status_code == 503
     assert response.json() == {"detail": "Unable to save the request."}
     send.assert_not_called()

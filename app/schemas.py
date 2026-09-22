@@ -8,10 +8,10 @@ class CustomerRequest(BaseModel):
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    customer_id: str = Field(min_length=1)
-    customer_name: str = Field(min_length=1)
+    customer_id: str = Field(min_length=1, max_length=100)
+    customer_name: str = Field(min_length=1, max_length=200)
     customer_email: EmailStr
-    message: str = Field(min_length=1)
+    message: str = Field(min_length=1, max_length=10_000)
 
 
 class TriageResult(BaseModel):

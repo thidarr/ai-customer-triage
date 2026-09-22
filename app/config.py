@@ -26,6 +26,14 @@ def get_settings() -> Settings:
     return Settings(gemini_api_key=api_key, gemini_model=model)
 
 
+def get_webhook_api_key() -> str:
+    load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)
+    key = os.getenv("WEBHOOK_API_KEY", "").strip()
+    if not key:
+        raise ConfigurationError("WEBHOOK_API_KEY must be set.")
+    return key
+
+
 def get_database_url() -> str:
     """Read database configuration independently of Gemini settings."""
     load_dotenv(Path(__file__).resolve().parent.parent / ".env", override=False)

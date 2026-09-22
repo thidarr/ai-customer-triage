@@ -1,18 +1,21 @@
 import logging
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 
 from app.classifier import ClassificationError, classify_message
 from app.config import ConfigurationError
 from app.database import DatabaseError, save_request, update_notification_status
 from app.notifications import NotificationError, send_notification
 from app.schemas import CustomerRequest, WebhookResponse
+from app.security import require_api_key
 
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 app = FastAPI(title="Customer Request Triage")
 logger = logging.getLogger(__name__)
 
 
-@app.post("/webhook", response_model=WebhookResponse)
+@app.post("/webhook", response_model=WebhookResponse, dependencies=[Depends(require_api_key)])
 def receive_customer_request(request: CustomerRequest) -> WebhookResponse:
     """Classify and persist a request before acknowledging success."""
     try:
