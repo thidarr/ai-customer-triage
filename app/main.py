@@ -26,8 +26,10 @@ def receive_customer_request(request: CustomerRequest) -> WebhookResponse:
     try:
         request_id = save_request(request, result, notification_status)
     except ConfigurationError as exc:
+        logger.error("Initial request save failed: category=database_configuration")
         raise HTTPException(503, "Database is not configured.") from exc
     except DatabaseError as exc:
+        logger.error("Initial request save failed: category=database_save")
         raise HTTPException(503, "Unable to save the request.") from exc
 
     if result.priority == "high":
@@ -36,6 +38,10 @@ def receive_customer_request(request: CustomerRequest) -> WebhookResponse:
             send_notification(request_id, result)
             notification_status = "sent"
         except NotificationError as exc:
+            logger.warning(
+                "Slack notification failed: request_id=%s category=notification_failure",
+                request_id,
+            )
             notification_status = "failed"
             notification_error = str(exc)
 

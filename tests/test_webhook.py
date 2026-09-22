@@ -194,7 +194,7 @@ def test_nonurgent_skips_slack(valid_request, classifier, notifications, priorit
 
 @pytest.mark.parametrize("slack_fails", [False, True])
 @pytest.mark.parametrize("error", [DatabaseError("secret"), ConfigurationError("secret")])
-def test_update_failure_has_separate_error_body(valid_request, classifier, notifications, error, slack_fails):
+def test_update_failure_has_separate_error_body(valid_request, classifier, notifications, error, slack_fails, caplog):
     classifier.return_value.priority = "high"
     if slack_fails:
         notifications[0].side_effect = NotificationError("Slack failed.")
@@ -206,3 +206,62 @@ def test_update_failure_has_separate_error_body(valid_request, classifier, notif
         "message": "The request was saved, but the notification outcome could not be recorded.",
         "request_id": 42,
     }}
+    records = [r for r in caplog.records if r.name == "app.main"]
+    expected = []
+    if slack_fails:
+        expected.append(("WARNING", "Slack notification failed: request_id=42 category=notification_failure"))
+    expected.append(("ERROR", "Could not record notification outcome for request 42"))
+    assert [(r.levelname, r.getMessage()) for r in records] == expected
+    assert all(r.exc_info is None and r.stack_info is None for r in records)
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize("failure,category", [
+    (ConfigurationError, "database_configuration"),
+    (DatabaseError, "database_save"),
+    (NotificationError, "notification_failure"),
+])
+def test_failure_logs_exclude_sensitive_data(
+    valid_request, classifier, persistence, notifications, caplog, failure, category
+):
+    classifier.return_value.priority = "high"
+    secrets = [
+        *valid_request.values(), classifier.return_value.summary,
+        classifier.return_value.suggested_action,
+        "postgresql://user:password@private-host/db",
+        "https://hooks.slack.com/services/private/secret/token",
+        "api-key-secret", "raw-provider-response",
+    ]
+    error = failure(" | ".join(secrets))
+    error.__cause__ = RuntimeError(" | ".join(secrets))
+    if failure is NotificationError:
+        notifications[0].side_effect = error
+    else:
+        persistence.side_effect = error
+
+    response = client.post("/webhook", json=valid_request)
+    records = [r for r in caplog.records if r.name == "app.main"]
+    assert len(records) == 1
+    record = records[0]
+    assert record.exc_info is None and record.stack_info is None
+    assert all(secret not in caplog.text for secret in secrets)
+    if failure is NotificationError:
+        assert record.levelname == "WARNING"
+        assert record.getMessage() == "Slack notification failed: request_id=42 category=notification_failure"
+        assert response.status_code == 200
+        assert response.json()["notification_status"] == "failed"
+        notifications[1].assert_called_once_with(42, "failed", str(error))
+    else:
+        assert record.levelname == "ERROR"
+        assert record.getMessage() == f"Initial request save failed: category={category}"
+        assert response.status_code == 503
+        notifications[0].assert_not_called()
+        notifications[1].assert_not_called()
+
+
+@pytest.mark.parametrize("priority", ["low", "medium", "high"])
+def test_success_does_not_log_failures(valid_request, classifier, caplog, priority):
+    classifier.return_value.priority = priority
+    response = client.post("/webhook", json=valid_request)
+    assert response.status_code == 200
+    assert not [r for r in caplog.records if r.name == "app.main"]
