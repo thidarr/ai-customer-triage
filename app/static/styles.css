@@ -15,7 +15,7 @@ body {
 }
 
 main {
-  max-width: 820px;
+  max-width: 960px;
   margin: 0 auto;
   padding: 64px 24px
 }
@@ -74,6 +74,10 @@ label {
   margin-bottom: 8px
 }
 
+.panel-intro {
+  margin: -10px 0 16px
+}
+
 select {
   width: 100%;
   padding: 12px;
@@ -89,7 +93,12 @@ select {
   padding: 14px;
   border-left: 3px solid #79a592;
   border-radius: 4px;
-  white-space: pre-wrap
+  white-space: pre-wrap;
+  overflow-wrap: anywhere
+}
+
+.preview:empty {
+  display: none
 }
 
 button {
@@ -109,7 +118,7 @@ button:hover {
 
 button:disabled {
   opacity: .55;
-  cursor: wait
+  cursor: not-allowed
 }
 
 :focus-visible {
@@ -131,22 +140,64 @@ button:disabled {
   color: #a12b20
 }
 
-dl {
-  margin: 0;
-  display: grid;
-  grid-template-columns: 140px 1fr;
-  gap: 14px
+.result-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 4px 16px;
+  margin-bottom: 12px
 }
 
-dt {
+.result-header h2 {
+  margin: 0
+}
+
+.badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px
+}
+
+.badge {
+  padding: 3px 10px;
+  border-radius: 6px;
+  background: #edf3f0;
+  color: #39695b;
+  font-size: .75rem;
+  font-weight: 700;
+  letter-spacing: .04em;
+  text-transform: uppercase
+}
+
+.badge[data-priority="medium"] {
+  background: #f3efdf;
+  color: #706024
+}
+
+.badge[data-priority="high"] {
+  background: #f5e9e4;
+  color: #8a4835
+}
+
+#result h3 {
+  margin: 0 0 4px;
   color: #52646a;
-  font-size: .9rem
+  font-size: .85rem;
+  font-weight: 600
 }
 
-dd {
-  margin: 0;
+.result-text {
+  margin: 0 0 14px;
   overflow-wrap: anywhere;
   white-space: pre-wrap
+}
+
+.result-note {
+  margin: 0;
+  padding-top: 12px;
+  border-top: 1px solid #d9e3df
 }
 
 footer {
@@ -164,15 +215,6 @@ footer {
 
   .panel {
     padding: 20px
-  }
-
-  dl {
-    grid-template-columns: 1fr;
-    gap: 4px
-  }
-
-  dd {
-    margin-bottom: 14px
   }
 
   button {

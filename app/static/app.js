@@ -42,12 +42,12 @@ document.querySelector('#demo-form').addEventListener('submit', async event => {
       return;
     }
     for (const [id, value] of Object.entries({
-      'request-id': data.id, category: data.category, priority: data.priority,
-      summary: data.summary, action: data.suggested_action,
-      notification: 'Not required — Slack is disabled for the public demo.'
+      'request-id': `Request #${data.id}`, category: data.category, priority: `${data.priority} priority`,
+      summary: data.summary, action: data.suggested_action
     })) document.getElementById(id).textContent = String(value);
+    document.getElementById('priority').dataset.priority = ['low', 'medium', 'high'].includes(data.priority) ? data.priority : '';
     result.hidden = false;
-    showStatus('Saved successfully. The request ID identifies the PostgreSQL record.');
+    showStatus('Classification saved successfully.');
   } catch {
     showStatus('The connection was interrupted or the response could not be read. The outcome is unknown; no automatic retry was made.', true);
   } finally {
@@ -61,8 +61,13 @@ async function loadSamples() {
   try {
     const response = await fetch('/demo/samples');
     const data = await response.json();
-    if (!response.ok) { showStatus(errorMessage(response, data), true); return; }
+    if (!response.ok) {
+      select.replaceChildren(new Option('Demo unavailable', ''));
+      showStatus(errorMessage(response, data), true);
+      return;
+    }
     samples = data;
+    select.replaceChildren();
     for (const sample of samples) {
       const option = document.createElement('option');
       option.value = sample.sample_id;
@@ -73,6 +78,9 @@ async function loadSamples() {
     button.disabled = false;
     select.dispatchEvent(new Event('change'));
     showStatus('Ready. Each submission uses one shared demo slot.');
-  } catch { showStatus('Unable to load the demo. Please refresh later.', true); }
+  } catch {
+    select.replaceChildren(new Option('Demo unavailable', ''));
+    showStatus('Unable to load the demo. Please refresh later.', true);
+  }
 }
 loadSamples();
