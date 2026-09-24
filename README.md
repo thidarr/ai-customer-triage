@@ -5,6 +5,9 @@ and saves the validated request and classification to PostgreSQL before returnin
 success. High-priority authenticated webhook requests trigger Slack notifications
 after the save commits. The public preset demo uses the same pipeline with Slack disabled.
 
+# Live Demon
+[AI Customer Request Triage](https://ai-customer-triage.onrender.com/)
+
 ## Setup and run (Git Bash)
 
 ```bash
